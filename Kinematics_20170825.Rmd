@@ -1,0 +1,379 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+# install.packages("data.table")
+# install.packages("gplots")
+# install.packages("RColorBrewer")
+# install.packages("cowplot")
+# install.packages("boot")
+
+library(data.table)
+library(cowplot)
+library(RColorBrewer)
+library(boot)
+library(knitr)
+
+rm(list=ls())
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+############################################## DATA MANIPULATIONS #####################################################
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+#1. Importing data
+DT <- fread("Kinematics_data.csv")
+animal_setup <- fread("kinematics_animal_setup.csv") 
+
+#2. Keeping only iliac and trochanter major height and descriptives
+DT <- DT[,c(10, 18, 19:21)]
+names(DT) <- c("iliac.height", "trochanter.height", "RH.index","hip.side", "day.kinematics")
+#Removing trochanter major height
+DT <- DT[,!"trochanter.height"]
+
+#3. Defining variables
+factor_vars_DT <- c("RH.index", "hip.side")
+DT[,factor_vars_DT] <- DT[,lapply(.SD, factor), .SDcols=factor_vars_DT]
+
+factor_vars_setup <- c("RH.index", "study.group")
+animal_setup[,factor_vars_setup] <- animal_setup[,lapply(.SD, factor), .SDcols=factor_vars_setup]
+
+#4. Merging with animal_setup
+DT <- merge(DT, animal_setup, by="RH.index")
+
+#5. Final removal of unnecessary data
+DT <- DT[day.kinematics<77 & day.sacrifice == 84,!"day.sacrifice"]
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+############################################## INDEXING & SUMMARIZING DATA #####################################################
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+#1. Adjusting iliac height for displacement
+DT <- DT[, iliac.height:=iliac.height*displacement/min(displacement)]
+
+#2. Indexing each height to the height at day 3 for each animal
+index_function <- function(animal_list_object){
+  divider <- animal_list_object[day.kinematics==3, mean(iliac.height, na.rm=T)]
+  animal_list_object <- animal_list_object[,iliac.height.index:=iliac.height/divider]
+  return(animal_list_object)
+}
+
+DT <- do.call(rbind,lapply(split(DT, DT[,RH.index]), function(object){index_function(object)}))
+
+#3. Removing outliers within each respective animal 
+DT <- DT[!(RH.index==179 | RH.index==181 & day.kinematics==49)]
+DT <- DT[!((RH.index==185 & day.kinematics==28) | (RH.index==186 & day.kinematics==35))]
+DT <- DT[!((RH.index==184 & day.kinematics==28) | (RH.index==241 & (day.kinematics==28 | day.kinematics ==49)))]
+
+DT_aggregated <- unique(DT[,.(iliac.height=mean(iliac.height, na.rm=T), iliac.height.index=mean(iliac.height.index, na.rm=T), study.group, force, displacement), by=c("RH.index", "day.kinematics")])
+
+#4. Calculating mean and confidence intervals
+DT_summary <- DT_aggregated[,.(Mean=mean(iliac.height.index, na.rm=T), SD = sd(iliac.height.index, na.rm=T), N=.N), by=c("day.kinematics","study.group")][,SEMx1.96:=qnorm(0.975)*SD/sqrt(N)][,`:=`(CI.Lower=Mean-SEMx1.96, CI.Upper=Mean+SEMx1.96)][,!c("SD", "N")]
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+############################################## ILIAC CREST HEIGHT OVER TIME ######################################
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+colorpalette_1 <- brewer.pal(11, "RdBu")[c(1,2,10,11,3)]
+
+iliac_crest_overtime_plot <- ggplot(DT_summary, aes(x=day.kinematics, y=Mean, colour=study.group))+
+  geom_errorbar(aes(ymin=CI.Lower, ymax=CI.Upper), position=position_dodge(width=5), size=2.5, width=6, alpha=0.8)+
+  geom_jitter(DT, mapping=aes(x=day.kinematics, y=iliac.height.index), position=position_jitterdodge(dodge.width=5, jitter.width = 4), size=2, alpha=0.2, shape=1)+
+  geom_jitter(DT_aggregated, mapping=aes(x=day.kinematics, y=iliac.height.index), position=position_jitterdodge(dodge.width=5, jitter.width = 4), size=3, alpha=1, shape=18)+
+  geom_point(position=position_dodge(width=5), size=3, shape=15)+
+  geom_segment(aes(x=3, xend=77, y=1, yend=1), linetype=2, color="black", size=1)+
+  geom_smooth(DT_summary[(study.group=="A"|study.group=="B")], mapping=aes(x=day.kinematics, y=Mean, fill=study.group), alpha=0.2, linetype=2, n=1000, span=0.9, show.legend = F)+
+  geom_smooth(DT_summary[day.kinematics<=35 & (study.group=="A" | study.group=="B")], mapping=aes(x=day.kinematics, y=Mean,fill=study.group), inherit.aes = FALSE, method=lm, se=F, colour="black", n=1000, size=0.8, show.legend = F)+
+
+  xlab("Day (post SCI)")+
+  ylab("Iliac crest height index (ICHI)")+
+
+  scale_color_manual(values=colorpalette_1, labels=c("Allogenic IDmBMSC (n=7)", "Syngeneic IDmBMSC (n=5)", "Medium Control (n=4)", "mSVF (n=6)", "Injury Control (n=5)"))+
+  scale_fill_manual(values=colorpalette_1, labels=c("Allogenic IDmBMSC (n=7)", "Syngeneic IDmBMSC (n=5)", "Medium Control (n=4)", "mSVF (n=6)", "Injury Control (n=5)"))+
+  scale_x_continuous(breaks=seq(0,70,7))+
+  scale_y_continuous(breaks=seq(0.5,2, 0.1))+
+
+ theme(legend.position = "bottom", legend.title = element_blank(), legend.text=element_text(size=18), legend.justification = "center", axis.title = element_text(size=22, face="bold"))+
+  
+  #Steady state lines
+  geom_segment(aes(x=42, xend=73, y=1.425, yend=1.425), color="black", size=0.8)+
+  geom_segment(aes(x=42, xend=73, y=1.25, yend=1.25),colour="black", size=0.8)+
+  annotate("text", x=70, y=0.6, label="95 % CI", fontface=2, size=4)+
+  
+  #Slope for Autologous 
+  annotate("text", x=26, y=1.35, label=toString(format(lm(Mean~day.kinematics, data=DT_summary[study.group =="B" & day.kinematics<=35])$coefficients[2], scientific = T, digits=3)), size=3.5, fontface=4)+
+  geom_text(aes(21,1.35,label="Delta"), parse=TRUE, size=4.5, colour="black")+
+  annotate("text", x=21.7,y=1.35, label="y", size=3.5, fontface=2)+
+  annotate("text", x=22.05, y=1.35, label="/",size=3.5, fontface=2)+
+  geom_text(aes(22.5,1.35,label="Delta"), parse=TRUE, size=4.5, colour="black")+
+  annotate("text", x=23.4,y=1.35, label="x:", size=3.5, fontface=2)+
+  #Slope for Allogenic
+  annotate("text", x=26, y=1.15, label=toString(format(lm(Mean~day.kinematics, data=DT_summary[study.group =="A" & day.kinematics<=35])$coefficients[2], scientific = T, digits = 3)
+), size=3.5, fontface=4)+
+  geom_text(aes(21,1.15,label="Delta"), parse=TRUE, size=5, colour="black")+
+  annotate("text", x=21.7,y=1.15, label="y", size=3.5, fontface=2)+
+  annotate("text", x=22.05, y=1.15, label="/",size=3.5, fontface=2)+
+  geom_text(aes(22.5,1.15,label="Delta"), parse=TRUE, size=5, colour="black")+
+  annotate("text", x=23.4,y=1.15, label="x:", size=3.5, fontface=2)
+
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+############################################## ILIAC CREST STEADY STATE #####################################
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+iliac_crest_steadystate_plot <- ggplot(DT_summary[day.kinematics>35], aes(x=day.kinematics, y=Mean, colour=study.group))+
+  geom_errorbar(aes(ymin=CI.Lower, ymax=CI.Upper), position=position_dodge(width=5), size=2.5, width=6, alpha=0.8)+
+  geom_jitter(DT[day.kinematics>35], mapping=aes(x=day.kinematics, y=iliac.height.index), position=position_jitterdodge(dodge.width=5, jitter.width = 4), size=2, alpha=0.2, shape=1)+
+  geom_jitter(DT_aggregated[day.kinematics>35], mapping=aes(x=day.kinematics, y=iliac.height.index), position=position_jitterdodge(dodge.width=5, jitter.width = 4), size=3, alpha=1, shape=18)+
+  geom_point(position=position_dodge(width=5), size=3, shape=15)+
+  geom_segment(aes(x=41, xend=70, y=1.425, yend=1.425), color=colorpalette_1[2], size=1.5, linetype=2)+
+  geom_segment(aes(x=41, xend=70, y=1.25, yend=1.25),colour=colorpalette_1[1], size=1.5, linetype=2)+
+
+  xlab("Day (post SCI)")+
+  ylab("Iliac crest height index (ICHI)")+
+
+  scale_color_manual(values=colorpalette_1, labels=c("Allogenic IDmBMSC (n=7)", "Syngeneic IDmBMSC (n=5)", "Medium Control (n=4)", "mSVF (n=6)", "Injury Control (n=5)"))+
+  scale_fill_manual(values=colorpalette_1, labels=c("Allogenic IDmBMSC (n=7)", "Syngeneic IDmBMSC (n=5)", "Medium Control (n=4)", "mSVF (n=6)", "Injury Control (n=5)"))+
+  scale_x_continuous(breaks=seq(42,70,7))+
+  scale_y_continuous(breaks=seq(0.5,2, 0.1))+
+
+ theme(legend.position = "bottom", legend.title = element_blank(), legend.text=element_text(size=18), legend.justification = "center", axis.title = element_text(size=20, face="bold"))+
+
+  annotate("text", x=70, y=0.6, label="95 % CI", fontface=2, size=4)+
+  
+  #Mean for syngeneic
+  annotate("text", x=60, y=1.425+0.08, label=paste(":",toString(round(DT_aggregated[day.kinematics %in% c(42,49,70) & study.group=="B", mean(iliac.height.index)],2))), fontface=2, size=4)+
+  geom_text(aes(59,1.425+0.06,label="mu"), parse=TRUE, size=4.5, colour="black")+
+  
+  #Mean for allogenic
+  annotate("text", x=60, y=1.25-0.06, label=paste(":",toString(round(DT_aggregated[day.kinematics %in% c(42,49,70) & study.group=="A", mean(iliac.height.index)],2))), fontface=2, size=4)+
+  geom_text(aes(59,1.25-0.08,label="mu"), parse=TRUE, size=4.5, colour="black")+
+
+  #Delta + p-value
+  #annotate("text", x=59, y=(1.425-1.25)/2+1.25, label=paste("(","p:", toString(format(wilcox.test(DT_aggregated[day.kinematics %in% c(42,49,70) & study.group=="A", iliac.height.index], DT_aggregated[day.kinematics %in% c(42,49,70) & study.group=="B", iliac.height.index])$p.value, scientific = T, digits=2)),")"), fontface=4, size=4)+
+  geom_segment(aes(x=54, xend=54, y=1.25+0.02, yend=1.425-0.02), color="black", size=0.8, arrow=arrow(ends="both", angle=30, type="closed", length=unit(0.2, "cm")))+
+  geom_text(aes(55,((1.425-1.25)/2+1.25),label="Delta"), parse=TRUE, size=4.5, colour="black")+
+  annotate("text", x=56, y=(1.425-1.25)/2+1.25, label=paste(":",toString(round(DT_aggregated[day.kinematics %in% c(42,49,70) & study.group=="B", mean(iliac.height.index)]-DT_aggregated[day.kinematics %in% c(42,49,70) & study.group=="A", mean(iliac.height.index)],2))), fontface=2, size=4)+
+
+  #Significances (simple main effects)
+  annotate("text", x=42, y=2, label="**", size=8)+
+  annotate("text", x=49, y=2, label="*", size=8)+
+  annotate("text", x=70, y=2, label="**", size=8)
+
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+############################################## SENSITIVITY ANALYSIS (STEADY STATE) #################################
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+#1. Subsetting data 
+DT_sensitivity_allogenic <- DT_aggregated[day.kinematics %in% c(42,49,70) & study.group=="A"]
+DT_sensitivity_syngeneic <- DT_aggregated[day.kinematics %in% c(42,49,70) & study.group=="B"]
+#2. Simulating mean iliac crest height index at steady state
+boot_mean_allogenic <- boot(DT_sensitivity_allogenic, function(DT_sensitivity_allogenic, b){DT_sensitivity_allogenic[b,mean(iliac.height.index)]}, 1000)
+boot_mean_syngeneic <- boot(DT_sensitivity_syngeneic, function(DT_sensitivity_syngeneic, b){DT_sensitivity_syngeneic[b,mean(iliac.height.index)]}, 1000)
+
+boot_mean_data <- data.table(boot_mean_allogenic$t, boot_mean_syngeneic$t)
+names(boot_mean_data) <- c("allogenic", "syngeneic")
+boot_mean_data <- suppressWarnings(melt(boot_mean_data, variable.name = "treatment", value.name = "iliac.height.index"))
+
+#3. Simulating bootstrapped confidence intervals
+boot_CI_allogenic <- suppressWarnings(boot.ci(boot_mean_allogenic)$basic[1,c(4,5)])
+boot_CI_syngeneic <- suppressWarnings(boot.ci(boot_mean_syngeneic)$basic[1,c(4,5)])
+
+#4. Plotting distribution of bootstrapped means
+iliac_crest_sensitivity_plot <- ggplot(boot_mean_data, aes(x=iliac.height.index, fill=treatment))+
+  geom_rect(aes(xmin=boot_CI_allogenic[1], xmax=boot_CI_allogenic[2], ymin=0, ymax=120), alpha=0.02, fill="grey")+
+  geom_rect(aes(xmin=boot_CI_syngeneic[1], xmax=boot_CI_syngeneic[2], ymin=0, ymax=120), alpha=0.02, fill="grey")+
+  geom_histogram(bins = 60)+
+  
+  xlab("Iliac crest height index (ICHI)")+
+  ylab("Count (n)")+
+  
+  scale_fill_manual(values=brewer.pal(11, "RdBu")[c(1,11)], labels=c("Allogenic IDmBMSC (n=7)", "Syngeneic IDmBMSC (n=5)"))+
+  scale_x_continuous(breaks=seq(1.15,1.5,0.05))+
+  scale_y_continuous(breaks=seq(0,120,10))+
+  
+  theme(legend.position = "bottom", legend.title = element_blank(), legend.text=element_text(size=20), legend.justification = "center", axis.title = element_text(size=22, face="bold"))+
+  
+  annotate("text", x=median(boot_mean_data[treatment=="allogenic", iliac.height.index]), y=30, label=round(median(boot_mean_data[treatment=="allogenic", iliac.height.index]),2), size=10, fontface=2, color="white")+
+  annotate("text", x=median(boot_mean_data[treatment=="syngeneic", iliac.height.index]), y=30, label=round(median(boot_mean_data[treatment=="syngeneic", iliac.height.index]),2), size=10, fontface=2, color="white")
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+################################## STATISTICAL ANALYSIS #####################################
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+#Mixed ANOVA  #Between group: study.group #Within group: day.kinematics
+
+#1A. Assumption of normality
+normality_assumption <- do.call(rbind,lapply(split(DT_aggregated[day.kinematics!=3], DT_aggregated[day.kinematics!=3,.(day.kinematics, study.group)]), function(cell){ifelse(length(cell[,iliac.height.index])>2, shapiro.test(cell[,iliac.height.index])$p.value, NA)}))
+
+#1B. Homogenity of variances per day
+homogenity_assumption <- do.call(rbind,lapply(split(DT_aggregated, DT_aggregated[, day.kinematics]), function(day){fligner.test(day[,iliac.height.index], day[,study.group])$p.value}))
+
+#1C. Sphericity
+  #sphericity (Mauchly's Test)
+
+
+
+
+
+
+#2. Calculating mixed ANOVA
+DT_aggregated <- DT_aggregated[,subject:=1:nrow(DT_aggregated)]
+
+mixed_anova <- aov(iliac.height.index~study.group*day.kinematics + Error(subject/day.kinematics), data=DT_aggregated)
+mixed_anova_summary <- summary(mixed_anova)
+
+#Interaction is significant -> proceeding with evaluation of simple main effects
+
+#3A. Simple main effects: diff. between study.group at each time point
+anova_simpleMain_day <- do.call(rbind, lapply(split(DT_aggregated, DT_aggregated[, day.kinematics]), function(day){summary(aov(iliac.height.index~study.group, data=day))[[1]][1,5]}))
+
+#3B. Simple main effects: diff. between between time points for each study group  
+anova_simpleMain_group <- do.call(rbind, lapply(split(DT_aggregated, DT_aggregated[,study.group]), function(group){summary(aov(iliac.height.index ~ day.kinematics + Error(subject/day.kinematics), data=group))[[3]][[1]][1,5]}))
+
+#4. Post hoc test: between study.groups at significant time points only
+post_hoc_function <- function(day.object){
+  post_hoc_table <- TukeyHSD(aov(iliac.height.index~study.group, data=day.object))[[1]]
+  post_hoc_table <- data.frame(post_hoc_table)
+  return(post_hoc_table)
+}
+
+mixed_anova_posthoc <- do.call(cbind,lapply(split(DT_aggregated[!(day.kinematics %in% c(3,14))], DT_aggregated[!(day.kinematics %in% c(3,14)),day.kinematics]), function(day){post_hoc_function(day)[,4]}))
+
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+##################################################### NeuN COUNT ###################################################
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+#1. Importing data
+kinematics_list <- lapply(as.list(dir()[grep("NeuN", dir())]), function(document){fread(document)})
+
+#3. Summarizing data for each list object
+neun_summary_function <- function(list.object){
+  sum_object <- unique(list.object[,.(RH.index, Count.Manual.Sum=sum(count.manual), Count.Macro.Sum=sum(count.macro), N=.N)])  
+  return(sum_object)
+}
+
+DT_neun <- do.call(rbind, lapply(kinematics_list, function(animal){neun_summary_function(animal)}))
+
+#4. Normalizing: calculating number of cells per frame (20x sample image)
+DT_neun <- DT_neun[,`:=`(Count.Manual.Sum.frame=Count.Manual.Sum/N, Count.Macro.Sum.frame=Count.Macro.Sum/N)]
+
+#5. Adding group data 
+DT_neun[, "RH.index"] <- factor(DT_neun[, RH.index])
+DT_neun <- merge(DT_neun, animal_setup, by="RH.index")
+
+#6. Plotting data
+#Reducing dataset & melting
+DT_neun <- DT_neun[,c("RH.index", "Count.Manual.Sum.frame", "Count.Macro.Sum.frame", "study.group")]
+DT_neun <- melt.data.table(DT_neun, id.vars =  c("RH.index", "study.group"))
+
+DT_neun_summary <- DT_neun[,.(mean=mean(value), min=min(value), max=max(value), N=.N, sd=sd(value)), by=c("variable", "study.group")]
+DT_neun_summary <- DT_neun_summary[,SEMx1.96:=qnorm(0.975)*sd/sqrt(N)][,`:=`(CI.lower=ifelse((mean-SEMx1.96)<0, 0, (mean-SEMx1.96)), CI.upper = mean+SEMx1.96)]
+
+DT_neun_summary_plotdata <- DT_neun_summary
+DT_neun_summary_plotdata[, "study.group"] <- factor(DT_neun_summary_plotdata[, study.group])
+
+neun_plot <- ggplot(DT_neun_summary_plotdata, aes(x=study.group, y=mean, alpha=variable, fill=study.group))+
+  geom_bar(stat = "identity", position = "dodge", width=0.7)+
+  geom_errorbar(aes(ymin=CI.lower, ymax=CI.upper), position=position_dodge(width=0.7), width=0.3, size=2, show.legend = F)+
+  geom_point(shape=15, size=3, position=position_dodge(width=0.7), show.legend = F)+
+  geom_point(DT_neun, mapping=aes(x=study.group, y=value), position = position_dodge(width=0.7), show.legend=F, size=4)+
+  
+  ylab("NeuN+ cells per frame (average)")+
+  
+  scale_fill_manual(values=brewer.pal(11, "RdBu")[c(1,11,4)], labels=c("Allogenic IDmBMSC (n=2)", "Syngeneic IDmBMSC (n=2)", "Injury Control (n=2)"))+
+  scale_alpha_manual(values=c(0.6,1), labels=c("Manual Count", "Macro Count"))+
+  scale_y_continuous(breaks=seq(0,30,5))+
+  scale_x_discrete(labels =c("Allogenic IDmBMSC", "Syngeneic IDmBMSC", "Injury Control"))+
+  
+  theme(legend.position = "bottom", legend.title = element_blank(), legend.text=element_text(size=18), legend.justification = "center", axis.title.x = element_blank(), axis.title.y = element_text(size=24, face="bold"), axis.text.x = element_text(size=18))
+
+```
+
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+####################################################### OUTPUT ###################################################
+```
+
+```{r echo=FALSE, warning=FALSE, error=FALSE, message=FALSE}
+# #1. Iliac height index over time
+# ggsave("iliac_crest_overtime_plot.jpg", iliac_crest_overtime_plot, width=14, height=7, dpi=1000)
+
+# #2. Iliac height index at steady state
+# ggsave("iliac_crest_steadystate_plot.jpg", iliac_crest_steadystate_plot, width=14, height=7, dpi=1000)
+
+# #3. Iliac height index sensitivity at steady state
+# ggsave("iliac_crest_sensitivity_plot.jpg", iliac_crest_sensitivity_plot, width=14, height=7, dpi=1000)
+
+# #4. Table with descriptive statistics for bootstrapped data (steady state)
+# boot_table <- boot_mean_data[,.(N=.N,Mean=mean(iliac.height.index), SD=sd(iliac.height.index), Median=median(iliac.height.index), p25=quantile(iliac.height.index, .25), p75=quantile(iliac.height.index, .75)), by="treatment"]
+# 
+# boot_table <- data.table(boot_table[,1:2], round(boot_table[,3:length(boot_table)],2))
+# 
+# fwrite(boot_table, "boot_table.csv", sep=";")
+
+# #5. saving NeuN plot
+# ggsave("neun_plot.jpg", neun_plot, width=14, height=7, dpi=1000)
+
+# #6. Exporting mixed-design ANOVA: interaction and simple main effects
+# main_effects_interaction <- data.table(variable = trimws(rownames(mixed_anova_summary[3][[1]][[1]])[1:3]),p.value= format(mixed_anova_summary[3][[1]][[1]][1:3,5], scientific=T, digits=2))
+# fwrite(main_effects_interaction, "main_effects_interaction.csv", sep=";")
+# 
+# anova_simpleMain_day <- data.table(day=rownames(anova_simpleMain_day), p.value=format(anova_simpleMain_day, scientific=T, digits=2))
+# fwrite(anova_simpleMain_day, "anova_simpleMain_day.csv", sep=";")
+# 
+# anova_simpleMain_group <- data.table(study.group=rownames(anova_simpleMain_group), p.value=format(anova_simpleMain_group, scientific=T, digits=2))
+# fwrite(anova_simpleMain_group, "anova_simpleMain_group.csv", sep=";")
+
+# #7. Exporting post hoc tests
+# mixed_anova_posthoc <- data.table(comparison=rownames(post_hoc_function(DT_aggregated[!(day.kinematics %in% c(3,14))])), format(mixed_anova_posthoc, scientific=T, digits=2))
+# 
+# fwrite(mixed_anova_posthoc, "mixed_anova_posthoc.csv", sep=";")
+
+# #8. Exporting assumptions tables
+# normality_assumption <- data.table(day.group=rownames(normality_assumption), p.value=round(normality_assumption,2))
+# normality_assumption <- normality_assumption[,`:=`(day=substr(day.group, 1, regexpr(".", day.group, fixed=T)-1), group=substr(day.group, regexpr(".", day.group, fixed=T)+1, nchar(day.group)))][,!"day.group"]
+# normality_assumption <- dcast(normality_assumption,...~day, value.var = "p.value.V1")
+# 
+# fwrite(normality_assumption, "normality_assumption.csv", sep=";")
+#  
+# homogenity_assumption <-data.table(day=rownames(homogenity_assumption), p.value=round(homogenity_assumption,2))
+# homogenity_assumption <- transpose(homogenity_assumption)
+# names(homogenity_assumption) <- NULL
+# 
+# fwrite(homogenity_assumption, "homogenity_assumption.csv", sep=";")
+
+#9. Exporting NeuN descriptive table
+neun_descriptive_table <- DT_neun_summary[variable=="Count.Manual.Sum.frame"][,!c("variable")][,!c("N", "sd", "SEMx1.96", "min", "max")]
+neun_descriptive_table <- data.table(neun_descriptive_table[,1], format(neun_descriptive_table[,2:4],digits=2, nsmall=2))
+fwrite(neun_descriptive_table, "neun_descriptive_table.csv", sep=";")
+
+#One-way ANOVA
+neun_anova <- aov(value~study.group, data = DT_neun[variable=="Count.Manual.Sum.frame"])
+
+#Post hoc test 
+neun_post_hoc <- TukeyHSD(neun_anova)
+fwrite(data.table(round(summary(neun_anova)[[1]][1,5],3),round(t(neun_post_hoc$study.group[,4]),3)), "neun_post_hoc.csv", sep=";")
+```
+
